@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -31,6 +32,24 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+# ── Прод-VPS getdoday.ru отдаёт только AAAA для api.telegram.org, а из трёх DC
+# routable лишь один IPv4. Тот же фикс, что в боте Doday. Включается флагом
+# FORCE_TG_IPV4=1 (только на проде); локально обычное разрешение имён. ──
+if os.environ.get("FORCE_TG_IPV4") == "1":
+    _TG_IPV4 = ("149.154.167.220",)
+    _orig_getaddrinfo = socket.getaddrinfo
+
+    def _ipv4_only(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if host == "api.telegram.org":
+            port = args[0] if args else kwargs.get("port", 443)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))
+                for ip in _TG_IPV4
+            ]
+        return _orig_getaddrinfo(host, *args, **kwargs)
+
+    socket.getaddrinfo = _ipv4_only  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "backend" / "taptower.db"
