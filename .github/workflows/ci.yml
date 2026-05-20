@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Import + boot smoke test
+        env:
+          TELEGRAM_BOT_TOKEN: "000:dummy"  # фейковый — приложение должно импортироваться без сети
+        run: |
+          python -c "import backend.app; print('import OK')"
+          python - <<'PY'
+          import os, time, subprocess, urllib.request, sys
+          os.environ.setdefault("TELEGRAM_BOT_TOKEN", "000:dummy")
+          p = subprocess.Popen(
+              ["uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8123"],
+          )
+          try:
+              ok = False
+              for _ in range(30):
+                  try:
+                      r = urllib.request.urlopen("http://127.0.0.1:8123/health", timeout=1)
+                      if r.status == 200:
+                          ok = True
+                          break
+                  except Exception:
+                      time.sleep(0.5)
+              print("health OK" if ok else "health FAILED")
+              sys.exit(0 if ok else 1)
+          finally:
+              p.terminate()
+          PY
+
+      - name: Validate game HTML is non-empty
+        run: test -s index.html && grep -q "Tap Tower" index.html
