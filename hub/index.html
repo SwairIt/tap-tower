@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#6d28d9">
+  <title>Игры</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    html,body { min-height:100%; }
+    body {
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      color:#f5f3ff;
+      background:linear-gradient(180deg,#1b1036,#0d0820);
+      padding:24px 18px calc(40px + env(safe-area-inset-bottom));
+      min-height:100vh; min-height:100dvh;
+    }
+    .head { text-align:center; margin:14px 0 26px; }
+    .logo {
+      font-size:30px; font-weight:800; letter-spacing:-.5px;
+      background:linear-gradient(135deg,#a855f7,#ec4899);
+      -webkit-background-clip:text; background-clip:text; color:transparent;
+    }
+    .sub { color:#b9aee6; font-size:14px; margin-top:6px; }
+    .grid { display:grid; gap:14px; max-width:520px; margin:0 auto; }
+    .card {
+      display:flex; align-items:center; gap:16px; text-decoration:none; color:inherit;
+      background:rgba(27,16,54,.72); border:1px solid rgba(168,85,247,.3);
+      border-radius:18px; padding:18px 18px;
+      transition:transform .12s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .card:active { transform:scale(.98); }
+    .card:hover { border-color:rgba(168,85,247,.6); box-shadow:0 12px 32px -10px rgba(124,58,237,.55); }
+    .emoji { font-size:38px; flex-shrink:0; width:54px; height:54px; display:flex; align-items:center; justify-content:center;
+      background:linear-gradient(135deg,rgba(124,58,237,.25),rgba(217,70,239,.18)); border-radius:14px; }
+    .title { font-size:18px; font-weight:700; }
+    .tag { font-size:13px; color:#b9aee6; margin-top:2px; line-height:1.35; }
+    .arrow { margin-left:auto; color:#8b7fc0; font-size:22px; }
+    .empty { text-align:center; color:#b9aee6; padding:50px 0; }
+    .foot { text-align:center; color:#6b6587; font-size:12px; margin-top:30px; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <div class="logo">🎮 Игры</div>
+    <div class="sub">Мини-игры. Жми и играй.</div>
+  </div>
+  <div class="grid" id="grid"><div class="empty" id="empty">Загрузка…</div></div>
+  <div class="foot">Сделано на getdoday.ru</div>
+
+<script>
+  (function(){
+    var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#1b1036'); } catch(e){} }
+    var API_ROOT = location.pathname.replace(/\/+$/, '');
+    function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+    fetch(API_ROOT + '/api/games').then(function(r){return r.json();}).then(function(j){
+      var grid = document.getElementById('grid');
+      var games = (j && j.games) || [];
+      if (!games.length) { grid.innerHTML = '<div class="empty">Скоро здесь появятся игры 🚀</div>'; return; }
+      grid.innerHTML = games.map(function(g){
+        return '<a class="card" href="' + API_ROOT + '/games/' + esc(g.slug) + '/">' +
+          '<span class="emoji">' + esc(g.emoji || '🎮') + '</span>' +
+          '<span><span class="title">' + esc(g.title) + '</span>' +
+          (g.tagline ? '<span class="tag">' + esc(g.tagline) + '</span>' : '') + '</span>' +
+          '<span class="arrow">→</span></a>';
+      }).join('');
+    }).catch(function(){
+      document.getElementById('grid').innerHTML = '<div class="empty">Не удалось загрузить список игр</div>';
+    });
+  })();
+</script>
+</body>
+</html>

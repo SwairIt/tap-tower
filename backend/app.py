@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import socket
 import sqlite3
 import time
@@ -72,7 +73,9 @@ if os.environ.get("FORCE_TG_IPV4") == "1":
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "backend" / "taptower.db"
-INDEX_HTML = ROOT / "index.html"
+HUB_HTML = ROOT / "hub" / "index.html"
+GAMES_DIR = ROOT / "games"
+_SLUG_OK = re.compile(r"^[a-z0-9-]{1,40}$")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 if not BOT_TOKEN:
@@ -115,24 +118,36 @@ def db():
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db() as c:
+        # миграция: дропаем pre-multigame таблицы без колонки `game`
+        for tbl in ("scores", "purchases"):
+            exists = c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            ).fetchone()
+            if exists:
+                cols = [r[1] for r in c.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                if "game" not in cols:
+                    c.execute(f"DROP TABLE {tbl}")
         c.executescript(
             """
             CREATE TABLE IF NOT EXISTS scores (
-                user_id    INTEGER PRIMARY KEY,
+                game       TEXT NOT NULL DEFAULT 'tap-tower',
+                user_id    INTEGER NOT NULL,
                 username   TEXT,
                 first_name TEXT,
                 best       INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (game, user_id)
             );
             CREATE TABLE IF NOT EXISTS purchases (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                game        TEXT NOT NULL DEFAULT 'tap-tower',
                 user_id     INTEGER NOT NULL,
                 item        TEXT NOT NULL,
                 stars       INTEGER NOT NULL,
                 charge_id   TEXT,
                 created_at  INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS ix_scores_best ON scores(best DESC);
+            CREATE INDEX IF NOT EXISTS ix_scores_game_best ON scores(game, best DESC);
             """
         )
 
@@ -176,17 +191,26 @@ def verify_init_data(init_data: str) -> dict[str, Any] | None:
 class ScoreIn(BaseModel):
     init_data: str = Field(min_length=1)
     score: int = Field(ge=0, le=100000)
+    game: str = Field(default="tap-tower", max_length=40)
 
 
 class InvoiceIn(BaseModel):
     init_data: str = Field(min_length=1)
     item: str = Field(default="continue")  # 'continue' | 'skin:<id>'
+    game: str = Field(default="tap-tower", max_length=40)
+    title: str = Field(default="", max_length=64)
+    stars: int = Field(default=0, ge=0, le=2500)
+
+
+def _safe_slug(slug: str) -> str | None:
+    return slug if _SLUG_OK.match(slug) else None
 
 
 # ──────────────────────── Routes ────────────────────────
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(INDEX_HTML)
+async def hub() -> FileResponse:
+    """Хаб — список всех игр."""
+    return FileResponse(HUB_HTML)
 
 
 @app.get("/health")
@@ -194,41 +218,105 @@ async def health() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/api/games")
+async def list_games() -> JSONResponse:
+    """Авто-обнаружение игр: сканируем games/<slug>/ с index.html (+ meta.json)."""
+    games: list[dict[str, Any]] = []
+    if GAMES_DIR.is_dir():
+        for d in sorted(GAMES_DIR.iterdir()):
+            if not d.is_dir() or not (d / "index.html").is_file():
+                continue
+            meta: dict[str, Any] = {}
+            meta_file = d / "meta.json"
+            if meta_file.is_file():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    meta = {}
+            games.append(
+                {
+                    "slug": d.name,
+                    "title": meta.get("title", d.name),
+                    "emoji": meta.get("emoji", "🎮"),
+                    "tagline": meta.get("tagline", ""),
+                    "order": meta.get("order", 100),
+                }
+            )
+    games.sort(key=lambda g: (g["order"], g["title"]))
+    return JSONResponse({"games": games})
+
+
+@app.get("/games/{slug}/", response_model=None)
+@app.get("/games/{slug}", response_model=None)
+async def serve_game(slug: str) -> FileResponse | JSONResponse:
+    s = _safe_slug(slug)
+    if not s:
+        return JSONResponse({"error": "bad_slug"}, status_code=404)
+    index_file = GAMES_DIR / s / "index.html"
+    if not index_file.is_file():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return FileResponse(index_file)
+
+
+@app.get("/games/{slug}/{asset:path}", response_model=None)
+async def serve_game_asset(slug: str, asset: str) -> FileResponse | JSONResponse:
+    s = _safe_slug(slug)
+    if not s or ".." in asset or asset.startswith("/"):
+        return JSONResponse({"error": "bad_path"}, status_code=404)
+    f = (GAMES_DIR / s / asset).resolve()
+    base = (GAMES_DIR / s).resolve()
+    if base not in f.parents or not f.is_file():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return FileResponse(f)
+
+
 @app.post("/api/score")
 async def submit_score(body: ScoreIn) -> JSONResponse:
     data = verify_init_data(body.init_data)
     if not data or "user" not in data:
         return JSONResponse({"error": "bad_init_data"}, status_code=401)
+    game = _safe_slug(body.game) or "tap-tower"
     u = data["user"]
     uid = int(u["id"])
     with db() as c:
-        row = c.execute("SELECT best FROM scores WHERE user_id=?", (uid,)).fetchone()
+        row = c.execute(
+            "SELECT best FROM scores WHERE game=? AND user_id=?", (game, uid)
+        ).fetchone()
         prev = row["best"] if row else 0
         best = max(prev, body.score)
         c.execute(
-            """INSERT INTO scores(user_id, username, first_name, best, updated_at)
-               VALUES(?,?,?,?,?)
-               ON CONFLICT(user_id) DO UPDATE SET
+            """INSERT INTO scores(game, user_id, username, first_name, best, updated_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(game, user_id) DO UPDATE SET
                  best=excluded.best, username=excluded.username,
                  first_name=excluded.first_name, updated_at=excluded.updated_at""",
-            (uid, u.get("username"), u.get("first_name"), best, int(time.time())),
+            (game, uid, u.get("username"), u.get("first_name"), best, int(time.time())),
         )
     return JSONResponse({"best": best, "submitted": body.score})
 
 
 @app.get("/api/leaderboard")
-async def leaderboard(limit: int = 20) -> JSONResponse:
+async def leaderboard(game: str = "tap-tower", limit: int = 20) -> JSONResponse:
+    g = _safe_slug(game) or "tap-tower"
     limit = max(1, min(limit, 100))
     with db() as c:
         rows = c.execute(
-            "SELECT username, first_name, best FROM scores ORDER BY best DESC, updated_at ASC LIMIT ?",
-            (limit,),
+            "SELECT username, first_name, best FROM scores WHERE game=? "
+            "ORDER BY best DESC, updated_at ASC LIMIT ?",
+            (g, limit),
         ).fetchall()
     top = [
         {"name": r["first_name"] or r["username"] or "Игрок", "best": r["best"]}
         for r in rows
     ]
     return JSONResponse({"top": top})
+
+
+# Дефолтный каталог Stars (для Tap Tower). Новые игры могут прислать свой
+# title/stars в теле запроса (валидируется), либо использовать 'continue'.
+_DEFAULT_CATALOG = {
+    "continue": ("Продолжить игру", "Продолжить с текущего места", 1),
+}
 
 
 @app.post("/api/invoice")
@@ -238,17 +326,17 @@ async def create_invoice(body: InvoiceIn) -> JSONResponse:
     if not data or "user" not in data:
         return JSONResponse({"error": "bad_init_data"}, status_code=401)
     uid = int(data["user"]["id"])
+    game = _safe_slug(body.game) or "tap-tower"
 
-    catalog = {
-        "continue": ("Продолжить игру", "Продолжить с текущей высоты", 1),
-        "skin:neon": ("Скин «Неон»", "Неоновая тема башни навсегда", 50),
-        "skin:gold": ("Скин «Золото»", "Золотая тема башни навсегда", 75),
-    }
-    if body.item not in catalog:
+    if body.item in _DEFAULT_CATALOG:
+        title, desc, stars = _DEFAULT_CATALOG[body.item]
+    elif body.title and 1 <= body.stars <= 2500:
+        # игра прислала свой товар (скин/буст) — название + цена в Stars
+        title, desc, stars = body.title, body.title, body.stars
+    else:
         return JSONResponse({"error": "unknown_item"}, status_code=400)
-    title, desc, stars = catalog[body.item]
-    payload = f"{body.item}:{uid}:{int(time.time())}"
 
+    payload = f"{game}:{body.item}:{uid}:{int(time.time())}"
     j = await run_in_threadpool(
         tg_call,
         "createInvoiceLink",
@@ -280,12 +368,15 @@ def process_update(update: dict[str, Any]) -> None:
     sp = msg.get("successful_payment")
     if sp:
         uid = int(msg["from"]["id"])
-        payload = sp.get("invoice_payload", "")
-        item = payload.split(":")[0] if payload else "?"
+        # payload формат: "game:item:uid:ts"
+        parts = sp.get("invoice_payload", "").split(":")
+        game = parts[0] if len(parts) >= 1 and parts[0] else "tap-tower"
+        item = parts[1] if len(parts) >= 2 else "?"
         with db() as c:
             c.execute(
-                "INSERT INTO purchases(user_id, item, stars, charge_id, created_at) VALUES(?,?,?,?,?)",
-                (uid, item, sp.get("total_amount", 0),
+                "INSERT INTO purchases(game, user_id, item, stars, charge_id, created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (game, uid, item, sp.get("total_amount", 0),
                  sp.get("telegram_payment_charge_id"), int(time.time())),
             )
         return

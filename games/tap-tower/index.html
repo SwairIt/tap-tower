@@ -123,15 +123,16 @@
     } catch (e) {}
   }
 
-  // ── Backend API. API_BASE = директория текущей страницы, чтобы работало и
-  // под префиксом (getdoday.ru/taptower/), и при прямом доступе (8012/). ──
-  const API_BASE = location.pathname.replace(/\/+$/, '');
+  // ── Backend API. API_ROOT = корень монтирования (/taptower) — берём часть
+  // пути до /games/. Работает под префиксом и при прямом доступе. ──
+  const API_ROOT = location.pathname.split('/games/')[0] || '';
+  const GAME = 'tap-tower';
   const initData = tg ? (tg.initData || '') : '';
   async function api(path, body) {
     try {
-      const r = await fetch(API_BASE + path, {
+      const r = await fetch(API_ROOT + path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(Object.assign({ game: GAME }, body)),
       });
       return await r.json();
     } catch (e) { return null; }
@@ -139,7 +140,7 @@
   async function loadLeaderboard() {
     const lb = document.getElementById('lb');
     try {
-      const r = await fetch(API_BASE + '/api/leaderboard?limit=5');
+      const r = await fetch(API_ROOT + '/api/leaderboard?game=' + GAME + '&limit=5');
       const j = await r.json();
       if (j && j.top && j.top.length) {
         lb.innerHTML = '<b>🏆 Топ игроков</b><br>' + j.top.map((t, i) =>
