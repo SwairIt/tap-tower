@@ -32,6 +32,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 # ── Прод-VPS getdoday.ru отдаёт только AAAA для api.telegram.org, а из трёх DC
 # routable лишь один IPv4. Тот же фикс, что в боте Doday. Включается флагом
@@ -85,6 +86,18 @@ if not BOT_TOKEN:
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 app = FastAPI(title="Tap Tower API")
+
+
+def tg_call(method: str, payload: dict[str, Any] | None = None,
+            params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Синхронный вызов Telegram Bot API. ВАЖНО: только sync httpx — async-путь
+    через uvloop игнорирует наш socket-патч IPv4 и таймаутит на проде."""
+    with httpx.Client(timeout=60) as cl:
+        if params is not None:
+            r = cl.get(f"{TG_API}/{method}", params=params)
+        else:
+            r = cl.post(f"{TG_API}/{method}", json=payload or {})
+    return r.json()
 
 
 # ───────────────────────── DB ─────────────────────────
@@ -236,33 +249,29 @@ async def create_invoice(body: InvoiceIn) -> JSONResponse:
     title, desc, stars = catalog[body.item]
     payload = f"{body.item}:{uid}:{int(time.time())}"
 
-    async with httpx.AsyncClient(timeout=15) as cl:
-        r = await cl.post(
-            f"{TG_API}/createInvoiceLink",
-            json={
-                "title": title,
-                "description": desc,
-                "payload": payload,
-                "currency": "XTR",  # Telegram Stars
-                "prices": [{"label": title, "amount": stars}],
-            },
-        )
-    j = r.json()
+    j = await run_in_threadpool(
+        tg_call,
+        "createInvoiceLink",
+        {
+            "title": title,
+            "description": desc,
+            "payload": payload,
+            "currency": "XTR",  # Telegram Stars
+            "prices": [{"label": title, "amount": stars}],
+        },
+    )
     if not j.get("ok"):
         return JSONResponse({"error": "tg_error", "detail": j}, status_code=502)
     return JSONResponse({"link": j["result"], "stars": stars})
 
 
-async def process_update(update: dict[str, Any]) -> None:
-    """Обработка одного Telegram-апдейта. Используется и webhook'ом, и поллером."""
+def process_update(update: dict[str, Any]) -> None:
+    """Обработка одного Telegram-апдейта (СИНХРОННАЯ). Зовётся поллером напрямую
+    и webhook'ом через run_in_threadpool."""
     # 1) pre_checkout — обязательно ответить ok в течение 10с
     pcq = update.get("pre_checkout_query")
     if pcq:
-        async with httpx.AsyncClient(timeout=15) as cl:
-            await cl.post(
-                f"{TG_API}/answerPreCheckoutQuery",
-                json={"pre_checkout_query_id": pcq["id"], "ok": True},
-            )
+        tg_call("answerPreCheckoutQuery", {"pre_checkout_query_id": pcq["id"], "ok": True})
         return
 
     msg = update.get("message") or {}
@@ -287,12 +296,11 @@ async def process_update(update: dict[str, Any]) -> None:
         chat_id = msg["chat"]["id"]
         public = os.environ.get("PUBLIC_URL", "").strip()
         if public:
-            kb = {"inline_keyboard": [[{"text": "🗼 Играть", "web_app": {"url": public}}]]}
             body = {
                 "chat_id": chat_id,
                 "text": "🗼 *Tap Tower* — строй башню одним тапом!\n\nЖми кнопку и побей рекорд друзей.",
                 "parse_mode": "Markdown",
-                "reply_markup": kb,
+                "reply_markup": {"inline_keyboard": [[{"text": "🗼 Играть", "web_app": {"url": public}}]]},
             }
         else:
             body = {
@@ -300,13 +308,13 @@ async def process_update(update: dict[str, Any]) -> None:
                 "text": "🗼 *Tap Tower* почти готов!\n\nИгра уже на сервере, осталось включить публичный доступ — кнопка «Играть» появится совсем скоро. Загляни позже 🙌",
                 "parse_mode": "Markdown",
             }
-        async with httpx.AsyncClient(timeout=15) as cl:
-            await cl.post(f"{TG_API}/sendMessage", json=body)
+        tg_call("sendMessage", body)
         return
 
 
 @app.post("/webhook")
 async def webhook(request: Request) -> JSONResponse:
-    """Telegram webhook → общий обработчик."""
-    await process_update(await request.json())
+    """Telegram webhook → общий обработчик (в threadpool, т.к. process_update sync)."""
+    update = await request.json()
+    await run_in_threadpool(process_update, update)
     return JSONResponse({"ok": True})

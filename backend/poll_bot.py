@@ -1,8 +1,8 @@
-"""Long-polling бот для Tap Tower — пока нет публичного webhook-URL.
+"""Long-polling бот для Tap Tower (СИНХРОННЫЙ) — пока нет публичного webhook-URL.
 
-Зовёт getUpdates и отдаёт апдейты в общий backend.app.process_update
-(тот же код, что у webhook). Когда появится PUBLIC_URL + webhook — этот
-процесс останавливаем (polling и webhook взаимоисключающи).
+Все вызовы Telegram — sync httpx (async-путь через uvloop игнорирует наш
+IPv4 socket-патч и таймаутит на проде). Когда появится PUBLIC_URL + webhook —
+этот процесс останавливаем (polling и webhook взаимоисключающи).
 
 Запуск:
     set -a; . ./.env; set +a
@@ -11,27 +11,27 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
+import time
 
 import httpx
 
-from backend.app import TG_API, process_update
+from backend.app import TG_API, process_update, tg_call
 
 
-async def main() -> None:
-    async with httpx.AsyncClient(timeout=70) as cl:
-        # снимаем webhook, иначе getUpdates вернёт 409
-        try:
-            await cl.post(f"{TG_API}/deleteWebhook", json={"drop_pending_updates": False})
-        except Exception as e:  # noqa: BLE001
-            print("deleteWebhook:", e)
+def main() -> None:
+    # снимаем webhook, иначе getUpdates вернёт 409
+    try:
+        tg_call("deleteWebhook", {"drop_pending_updates": False})
+    except Exception as e:  # noqa: BLE001
+        print("deleteWebhook:", e, flush=True)
 
-        offset = 0
-        print("Tap Tower poller started")
+    offset = 0
+    print("Tap Tower poller started", flush=True)
+    with httpx.Client(timeout=60) as cl:
         while True:
             try:
-                r = await cl.get(
+                r = cl.get(
                     f"{TG_API}/getUpdates",
                     params={
                         "offset": offset,
@@ -41,19 +41,19 @@ async def main() -> None:
                 )
                 data = r.json()
                 if not data.get("ok"):
-                    print("getUpdates not ok:", data)
-                    await asyncio.sleep(3)
+                    print("getUpdates not ok:", data, flush=True)
+                    time.sleep(3)
                     continue
                 for upd in data.get("result", []):
                     offset = upd["update_id"] + 1
                     try:
-                        await process_update(upd)
+                        process_update(upd)
                     except Exception as e:  # noqa: BLE001
-                        print("process_update error:", e)
+                        print("process_update error:", e, flush=True)
             except Exception as e:  # noqa: BLE001
-                print("poll loop error:", e)
-                await asyncio.sleep(3)
+                print("poll loop error:", e, flush=True)
+                time.sleep(3)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
