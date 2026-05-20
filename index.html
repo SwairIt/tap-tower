@@ -123,11 +123,13 @@
     } catch (e) {}
   }
 
-  // ── Backend API (same origin когда отдаётся FastAPI; в статике просто no-op) ──
+  // ── Backend API. API_BASE = директория текущей страницы, чтобы работало и
+  // под префиксом (getdoday.ru/taptower/), и при прямом доступе (8012/). ──
+  const API_BASE = location.pathname.replace(/\/+$/, '');
   const initData = tg ? (tg.initData || '') : '';
   async function api(path, body) {
     try {
-      const r = await fetch(path, {
+      const r = await fetch(API_BASE + path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
@@ -137,7 +139,7 @@
   async function loadLeaderboard() {
     const lb = document.getElementById('lb');
     try {
-      const r = await fetch('/api/leaderboard?limit=5');
+      const r = await fetch(API_BASE + '/api/leaderboard?limit=5');
       const j = await r.json();
       if (j && j.top && j.top.length) {
         lb.innerHTML = '<b>🏆 Топ игроков</b><br>' + j.top.map((t, i) =>
