@@ -37,7 +37,11 @@ from pydantic import BaseModel, Field
 # routable лишь один IPv4. Тот же фикс, что в боте Doday. Включается флагом
 # FORCE_TG_IPV4=1 (только на проде); локально обычное разрешение имён. ──
 if os.environ.get("FORCE_TG_IPV4") == "1":
+    import asyncio.base_events
+
     _TG_IPV4 = ("149.154.167.220",)
+
+    # 1) синхронный resolver (httpx sync, urllib, и пр.)
     _orig_getaddrinfo = socket.getaddrinfo
 
     def _ipv4_only(host, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -50,6 +54,20 @@ if os.environ.get("FORCE_TG_IPV4") == "1":
         return _orig_getaddrinfo(host, *args, **kwargs)
 
     socket.getaddrinfo = _ipv4_only  # type: ignore[assignment]
+
+    # 2) async resolver event-loop'а (httpx async через anyio/asyncio).
+    #    Без этого async-путь резолвит api.telegram.org в IPv6 → таймаут.
+    _orig_async_gai = asyncio.base_events.BaseEventLoop.getaddrinfo
+
+    async def _ipv4_only_async(self, host, port=0, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if host == "api.telegram.org":
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))
+                for ip in _TG_IPV4
+            ]
+        return await _orig_async_gai(self, host, port, *args, **kwargs)
+
+    asyncio.base_events.BaseEventLoop.getaddrinfo = _ipv4_only_async  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "backend" / "taptower.db"
