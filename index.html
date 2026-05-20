@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#6d28d9">
+  <title>Tap Tower</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg-top: #1b1036;
+      --bg-bot: #0d0820;
+      --text: #f5f3ff;
+      --muted: #b9aee6;
+      --accent: #a855f7;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--bg-top), var(--bg-bot));
+      touch-action: none;
+    }
+    #game { display: block; width: 100vw; height: 100vh; }
+
+    .overlay {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px; text-align: center;
+      padding: 24px; pointer-events: none; transition: opacity .25s ease;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; visibility: hidden; }
+    .panel {
+      pointer-events: auto;
+      background: rgba(27, 16, 54, 0.72);
+      backdrop-filter: blur(12px) saturate(160%);
+      -webkit-backdrop-filter: blur(12px) saturate(160%);
+      border: 1px solid rgba(168,85,247,0.35);
+      border-radius: 22px; padding: 28px 26px; max-width: 340px; width: 100%;
+      box-shadow: 0 20px 60px -12px rgba(124,58,237,0.5);
+    }
+    .logo {
+      font-size: 34px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 6px;
+      background: linear-gradient(135deg, #a855f7, #ec4899);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .sub { color: var(--muted); font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+    .big-score { font-size: 64px; font-weight: 800; line-height: 1; margin: 4px 0; }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; }
+    .best { color: var(--muted); font-size: 15px; margin-top: 10px; }
+    .btn {
+      pointer-events: auto; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; margin-top: 12px; padding: 14px 20px; border: none; border-radius: 14px;
+      font-size: 16px; font-weight: 700; cursor: pointer; color: #fff;
+      background: linear-gradient(135deg, #7c3aed, #d946ef);
+      box-shadow: 0 10px 30px -8px rgba(124,58,237,0.7); transition: transform .12s ease, filter .12s ease;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn.ghost {
+      background: transparent; border: 1px solid rgba(168,85,247,0.4); color: var(--text);
+      box-shadow: none; font-weight: 600;
+    }
+    .hud {
+      position: fixed; top: 0; left: 0; right: 0; padding-top: env(safe-area-inset-top);
+      display: flex; flex-direction: column; align-items: center; pointer-events: none;
+      transition: opacity .2s ease;
+    }
+    .hud.hidden { opacity: 0; }
+    .hud .score { font-size: 56px; font-weight: 800; margin-top: 18px;
+      text-shadow: 0 4px 20px rgba(124,58,237,0.6); }
+    .hud .combo { font-size: 14px; color: #f0abfc; font-weight: 700; height: 18px; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .stars-note { font-size: 11px; color: var(--muted); margin-top: 16px; line-height: 1.4; opacity: .8; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div class="hud hidden" id="hud">
+    <div class="score" id="hudScore">0</div>
+    <div class="combo" id="hudCombo"></div>
+  </div>
+
+  <!-- Start screen -->
+  <div class="overlay" id="startScreen">
+    <div class="panel">
+      <div class="logo">Tap Tower</div>
+      <div class="sub">Строй башню одним тапом.<br>Точнее ставишь — выше залезаешь.</div>
+      <button class="btn" id="startBtn">Играть</button>
+      <button class="btn ghost" id="skinsBtn">🎨 Скины</button>
+      <div class="best" id="startBest"></div>
+    </div>
+  </div>
+
+  <!-- Game over screen -->
+  <div class="overlay hidden" id="overScreen">
+    <div class="panel">
+      <div class="label">Результат</div>
+      <div class="big-score" id="finalScore">0</div>
+      <div class="best" id="overBest"></div>
+      <button class="btn" id="againBtn">Ещё раз</button>
+      <button class="btn ghost" id="shareBtn">📣 Поделиться</button>
+      <button class="btn ghost" id="continueBtn">⭐ Продолжить (1 Star)</button>
+      <div class="stars-note">Скины и «продолжить» — за Telegram Stars. Скоро.</div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Telegram WebApp (опционально — игра работает и в обычном браузере) ──
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#1b1036'); } catch (e) {} }
+  function haptic(type) {
+    if (!tg || !tg.HapticFeedback) return;
+    try {
+      if (type === 'light') tg.HapticFeedback.impactOccurred('light');
+      else if (type === 'rigid') tg.HapticFeedback.impactOccurred('rigid');
+      else if (type === 'perfect') tg.HapticFeedback.notificationOccurred('success');
+      else if (type === 'over') tg.HapticFeedback.notificationOccurred('error');
+    } catch (e) {}
+  }
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  // ── Game constants ──
+  const BLOCK_H = 40;
+  const PERFECT_TOL = 6;
+  const ACTIVE_Y = () => H * 0.30;       // screen-Y центра активного ряда
+  const BASE_W = () => Math.min(W * 0.62, 280);
+
+  // ── State ──
+  let state = 'start';   // 'start' | 'playing' | 'over'
+  let blocks = [];       // снизу-вверх: {x, w, color}
+  let moving = null;     // {x, w, dir, speed, color}
+  let falling = [];      // отрезанные куски
+  let score = 0, combo = 0;
+  let best = +(localStorage.getItem('taptower_best') || 0);
+  let baseHue = 270;
+  let shakeT = 0;
+
+  const hud = document.getElementById('hud');
+  const hudScore = document.getElementById('hudScore');
+  const hudCombo = document.getElementById('hudCombo');
+
+  function colorFor(level) {
+    const hue = (baseHue + level * 9) % 360;
+    return 'hsl(' + hue + ',68%,60%)';
+  }
+  function shade(hsl, dl) {
+    const m = hsl.match(/hsl\((\d+),(\d+)%,(\d+)%\)/);
+    if (!m) return hsl;
+    return 'hsl(' + m[1] + ',' + m[2] + '%,' + Math.max(0, Math.min(100, +m[3] + dl)) + '%)';
+  }
+
+  function reset() {
+    blocks = []; falling = []; score = 0; combo = 0;
+    baseHue = Math.floor(Math.random() * 360);
+    const bw = BASE_W();
+    blocks.push({ x: (W - bw) / 2, w: bw, color: colorFor(0) });
+    spawnMoving();
+    hudScore.textContent = '0'; hudCombo.textContent = '';
+  }
+
+  function spawnMoving() {
+    const top = blocks[blocks.length - 1];
+    const fromLeft = blocks.length % 2 === 0;
+    const speed = 2.2 + Math.min(score * 0.07, 4.0);
+    moving = {
+      x: fromLeft ? -top.w : W,
+      w: top.w,
+      dir: fromLeft ? 1 : -1,
+      speed: speed,
+      color: colorFor(blocks.length),
+    };
+  }
+
+  // screen-Y верхней грани блока с индексом i (0 = база)
+  function blockScreenY(i) {
+    const topIndex = blocks.length - 1;
+    return ACTIVE_Y() + BLOCK_H + (topIndex - i) * BLOCK_H;
+  }
+
+  function place() {
+    if (state !== 'playing' || !moving) return;
+    const prev = blocks[blocks.length - 1];
+    const left = Math.max(moving.x, prev.x);
+    const right = Math.min(moving.x + moving.w, prev.x + prev.w);
+    const overlap = right - left;
+
+    if (overlap <= 0) { gameOver(); return; }
+
+    const diff = moving.x - prev.x;
+    let nx = left, nw = overlap;
+
+    if (Math.abs(diff) <= PERFECT_TOL) {
+      // perfect: ширина не теряется, бонус
+      nx = prev.x; nw = prev.w; combo++;
+      haptic('perfect');
+      flash = 1;
+    } else {
+      combo = 0;
+      haptic('rigid');
+      // отрезанный кусок → падает
+      const sliceY = blockScreenY(blocks.length - 1) - BLOCK_H;
+      if (moving.x < prev.x) {
+        falling.push({ x: moving.x, y: sliceY, w: left - moving.x, vy: 0, vx: -1.2, color: moving.color });
+      } else {
+        falling.push({ x: right, y: sliceY, w: (moving.x + moving.w) - right, vy: 0, vx: 1.2, color: moving.color });
+      }
+    }
+
+    blocks.push({ x: nx, w: nw, color: moving.color });
+    score++;
+    hudScore.textContent = score;
+    hudCombo.textContent = combo >= 2 ? ('Идеально ×' + combo + ' 🔥') : '';
+    if (score > best) { best = score; localStorage.setItem('taptower_best', best); }
+    shakeT = 6;
+    spawnMoving();
+  }
+
+  let flash = 0;
+
+  function gameOver() {
+    state = 'over';
+    haptic('over');
+    hud.classList.add('hidden');
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('overBest').textContent = 'Рекорд: ' + best;
+    document.getElementById('overScreen').classList.remove('hidden');
+  }
+
+  function startGame() {
+    reset();
+    state = 'playing';
+    document.getElementById('startScreen').classList.add('hidden');
+    document.getElementById('overScreen').classList.add('hidden');
+    hud.classList.remove('hidden');
+  }
+
+  // ── Input ──
+  function onTap(e) {
+    if (state === 'playing') { e.preventDefault(); place(); haptic('light'); }
+  }
+  window.addEventListener('pointerdown', onTap, { passive: false });
+
+  document.getElementById('startBtn').addEventListener('click', (e) => { e.stopPropagation(); startGame(); });
+  document.getElementById('againBtn').addEventListener('click', (e) => { e.stopPropagation(); startGame(); });
+  document.getElementById('skinsBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    alert('Магазин скинов за Telegram Stars — в следующем апдейте ⭐');
+  });
+  document.getElementById('continueBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    // TODO: tg.openInvoice(...) на 1 Star → при успехе продолжить с текущей высоты
+    alert('Оплата Stars подключается на бэкенде — скоро ⭐');
+  });
+  document.getElementById('shareBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const text = 'Я построил башню высотой ' + score + ' в Tap Tower! Побей меня 👉';
+    const url = 'https://t.me/'; // заменится на ссылку бота
+    if (tg && tg.openTelegramLink) {
+      tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text));
+    } else if (navigator.share) {
+      navigator.share({ text: text }).catch(() => {});
+    } else {
+      alert(text);
+    }
+  });
+
+  document.getElementById('startBest').textContent = best ? ('Рекорд: ' + best) : '';
+
+  // ── Render loop ──
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min((now - last) / 16.67, 2.5); last = now;
+    ctx.clearRect(0, 0, W, H);
+
+    let sx = 0, sy = 0;
+    if (shakeT > 0) { shakeT -= dt; sx = (Math.random() - 0.5) * 3; sy = (Math.random() - 0.5) * 3; }
+    ctx.save(); ctx.translate(sx, sy);
+
+    // ambient glow
+    const g = ctx.createRadialGradient(W / 2, H * 0.25, 0, W / 2, H * 0.25, W * 0.8);
+    g.addColorStop(0, 'rgba(124,58,237,0.18)'); g.addColorStop(1, 'rgba(124,58,237,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // placed blocks
+    if (state === 'playing' || state === 'over') {
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        const y = blockScreenY(i) - BLOCK_H;
+        if (y > H + BLOCK_H) continue;
+        if (y < -BLOCK_H) continue;
+        drawBlock(b.x, y, b.w, b.color);
+      }
+      // moving block
+      if (state === 'playing' && moving) {
+        moving.x += moving.dir * moving.speed * dt;
+        if (moving.x > W) { moving.x = W; moving.dir = -1; }
+        if (moving.x + moving.w < 0) { moving.x = -moving.w; moving.dir = 1; }
+        drawBlock(moving.x, ACTIVE_Y() - BLOCK_H, moving.w, moving.color);
+      }
+      // falling slices
+      for (let i = falling.length - 1; i >= 0; i--) {
+        const f = falling[i];
+        f.vy += 0.6 * dt; f.y += f.vy * dt; f.x += (f.vx || 0) * dt;
+        ctx.globalAlpha = 0.85;
+        drawBlock(f.x, f.y, f.w, f.color);
+        ctx.globalAlpha = 1;
+        if (f.y > H + 60) falling.splice(i, 1);
+      }
+    }
+
+    if (flash > 0) {
+      flash -= 0.04 * dt;
+      ctx.fillStyle = 'rgba(240,171,252,' + (flash * 0.25) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    ctx.restore();
+    requestAnimationFrame(frame);
+  }
+
+  function drawBlock(x, y, w, color) {
+    const r = 7;
+    roundRect(ctx, x, y, w, BLOCK_H, r);
+    ctx.fillStyle = color; ctx.fill();
+    // верхняя подсветка
+    ctx.fillStyle = shade(color, 12);
+    roundRect(ctx, x, y, w, 8, r); ctx.fill();
+    // правая тень для глубины
+    ctx.fillStyle = shade(color, -14);
+    ctx.fillRect(x + w - 6, y + 8, 6, BLOCK_H - 8);
+  }
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
