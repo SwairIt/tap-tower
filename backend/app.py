@@ -235,11 +235,8 @@ async def create_invoice(body: InvoiceIn) -> JSONResponse:
     return JSONResponse({"link": j["result"], "stars": stars})
 
 
-@app.post("/webhook")
-async def webhook(request: Request) -> JSONResponse:
-    """Telegram webhook: подтверждаем pre_checkout и фиксируем оплату."""
-    update = await request.json()
-
+async def process_update(update: dict[str, Any]) -> None:
+    """Обработка одного Telegram-апдейта. Используется и webhook'ом, и поллером."""
     # 1) pre_checkout — обязательно ответить ok в течение 10с
     pcq = update.get("pre_checkout_query")
     if pcq:
@@ -248,7 +245,7 @@ async def webhook(request: Request) -> JSONResponse:
                 f"{TG_API}/answerPreCheckoutQuery",
                 json={"pre_checkout_query_id": pcq["id"], "ok": True},
             )
-        return JSONResponse({"ok": True})
+        return
 
     msg = update.get("message") or {}
 
@@ -264,26 +261,34 @@ async def webhook(request: Request) -> JSONResponse:
                 (uid, item, sp.get("total_amount", 0),
                  sp.get("telegram_payment_charge_id"), int(time.time())),
             )
-        return JSONResponse({"ok": True})
+        return
 
-    # 3) /start — приветствие + кнопка запуска Mini App
+    # 3) /start — приветствие + кнопка запуска Mini App (если есть PUBLIC_URL)
     text = msg.get("text", "")
-    if text.startswith("/start"):
+    if text.startswith("/start") or text.startswith("/play"):
         chat_id = msg["chat"]["id"]
-        public = os.environ.get("PUBLIC_URL", "")
-        kb = None
+        public = os.environ.get("PUBLIC_URL", "").strip()
         if public:
             kb = {"inline_keyboard": [[{"text": "🗼 Играть", "web_app": {"url": public}}]]}
+            body = {
+                "chat_id": chat_id,
+                "text": "🗼 *Tap Tower* — строй башню одним тапом!\n\nЖми кнопку и побей рекорд друзей.",
+                "parse_mode": "Markdown",
+                "reply_markup": kb,
+            }
+        else:
+            body = {
+                "chat_id": chat_id,
+                "text": "🗼 *Tap Tower* почти готов!\n\nИгра уже на сервере, осталось включить публичный доступ — кнопка «Играть» появится совсем скоро. Загляни позже 🙌",
+                "parse_mode": "Markdown",
+            }
         async with httpx.AsyncClient(timeout=15) as cl:
-            await cl.post(
-                f"{TG_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": "🗼 *Tap Tower* — строй башню одним тапом!\n\nЖми кнопку и побей рекорд друзей.",
-                    "parse_mode": "Markdown",
-                    **({"reply_markup": kb} if kb else {}),
-                },
-            )
-        return JSONResponse({"ok": True})
+            await cl.post(f"{TG_API}/sendMessage", json=body)
+        return
 
+
+@app.post("/webhook")
+async def webhook(request: Request) -> JSONResponse:
+    """Telegram webhook → общий обработчик."""
+    await process_update(await request.json())
     return JSONResponse({"ok": True})
