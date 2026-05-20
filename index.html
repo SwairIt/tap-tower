@@ -98,6 +98,7 @@
       <div class="label">Результат</div>
       <div class="big-score" id="finalScore">0</div>
       <div class="best" id="overBest"></div>
+      <div id="lb" style="margin:14px 0 4px; text-align:left; font-size:13px; color:var(--muted);"></div>
       <button class="btn" id="againBtn">Ещё раз</button>
       <button class="btn ghost" id="shareBtn">📣 Поделиться</button>
       <button class="btn ghost" id="continueBtn">⭐ Продолжить (1 Star)</button>
@@ -121,6 +122,30 @@
       else if (type === 'over') tg.HapticFeedback.notificationOccurred('error');
     } catch (e) {}
   }
+
+  // ── Backend API (same origin когда отдаётся FastAPI; в статике просто no-op) ──
+  const initData = tg ? (tg.initData || '') : '';
+  async function api(path, body) {
+    try {
+      const r = await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return await r.json();
+    } catch (e) { return null; }
+  }
+  async function loadLeaderboard() {
+    const lb = document.getElementById('lb');
+    try {
+      const r = await fetch('/api/leaderboard?limit=5');
+      const j = await r.json();
+      if (j && j.top && j.top.length) {
+        lb.innerHTML = '<b>🏆 Топ игроков</b><br>' + j.top.map((t, i) =>
+          (i + 1) + '. ' + escapeHtml(t.name) + ' — ' + t.best).join('<br>');
+      } else { lb.innerHTML = ''; }
+    } catch (e) { lb.innerHTML = ''; }
+  }
+  function escapeHtml(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -239,6 +264,16 @@
     document.getElementById('finalScore').textContent = score;
     document.getElementById('overBest').textContent = 'Рекорд: ' + best;
     document.getElementById('overScreen').classList.remove('hidden');
+    // отправляем счёт на сервер (только в Telegram) + грузим лидерборд
+    if (initData && score > 0) api('/api/score', { init_data: initData, score: score });
+    loadLeaderboard();
+  }
+
+  function continueGame() {
+    document.getElementById('overScreen').classList.add('hidden');
+    hud.classList.remove('hidden');
+    state = 'playing';
+    spawnMoving();
   }
 
   function startGame() {
@@ -261,15 +296,19 @@
     e.stopPropagation();
     alert('Магазин скинов за Telegram Stars — в следующем апдейте ⭐');
   });
-  document.getElementById('continueBtn').addEventListener('click', (e) => {
+  document.getElementById('continueBtn').addEventListener('click', async (e) => {
     e.stopPropagation();
-    // TODO: tg.openInvoice(...) на 1 Star → при успехе продолжить с текущей высоты
-    alert('Оплата Stars подключается на бэкенде — скоро ⭐');
+    if (!tg || !initData) { alert('Продолжить за Stars доступно в Telegram'); return; }
+    const res = await api('/api/invoice', { init_data: initData, item: 'continue' });
+    if (!res || !res.link) { alert('Не удалось создать счёт, попробуй ещё раз'); return; }
+    tg.openInvoice(res.link, (status) => {
+      if (status === 'paid') continueGame();
+    });
   });
   document.getElementById('shareBtn').addEventListener('click', (e) => {
     e.stopPropagation();
     const text = 'Я построил башню высотой ' + score + ' в Tap Tower! Побей меня 👉';
-    const url = 'https://t.me/'; // заменится на ссылку бота
+    const url = 'https://t.me/tap_tower_bot/play';
     if (tg && tg.openTelegramLink) {
       tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text));
     } else if (navigator.share) {
