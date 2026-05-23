@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#6d28d9">
+  <title>2048</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg-top: #1b1036;
+      --bg-bot: #0d0820;
+      --text: #f5f3ff;
+      --muted: #b9aee6;
+      --accent: #a855f7;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, var(--bg-top), var(--bg-bot));
+      touch-action: none;
+      display: flex; flex-direction: column; align-items: center;
+    }
+
+    .header {
+      width: 100%; max-width: 420px; padding: 16px 20px 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding-top: calc(env(safe-area-inset-top, 0px) + 16px);
+    }
+    .title {
+      font-size: 32px; font-weight: 800;
+      background: linear-gradient(135deg, #a855f7, #ec4899);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .scores { display: flex; gap: 10px; }
+    .score-box {
+      background: rgba(168,85,247,0.2); border-radius: 10px; padding: 6px 14px;
+      text-align: center; min-width: 70px;
+    }
+    .score-box .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); }
+    .score-box .value { font-size: 22px; font-weight: 800; }
+
+    .board-wrap {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      width: 100%; max-width: 420px; padding: 12px 16px;
+    }
+    .board {
+      position: relative; width: 100%; aspect-ratio: 1; max-width: 380px;
+      background: rgba(168,85,247,0.12); border-radius: 14px; padding: 8px;
+      border: 1px solid rgba(168,85,247,0.25);
+    }
+    .grid { display: grid; grid-template: repeat(4,1fr)/repeat(4,1fr); gap: 8px; width: 100%; height: 100%; }
+    .cell {
+      background: rgba(168,85,247,0.08); border-radius: 10px;
+    }
+    .tiles { position: absolute; inset: 8px; }
+    .tile {
+      position: absolute; display: flex; align-items: center; justify-content: center;
+      border-radius: 10px; font-weight: 800; transition: top .12s ease, left .12s ease;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .tile.merged { animation: pop .2s ease; }
+    .tile.new { animation: appear .2s ease; }
+    @keyframes pop { 0%{transform:scale(1)} 50%{transform:scale(1.15)} 100%{transform:scale(1)} }
+    @keyframes appear { 0%{transform:scale(0);opacity:0} 100%{transform:scale(1);opacity:1} }
+
+    .bottom-bar {
+      width: 100%; max-width: 420px; padding: 0 20px 20px;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+      display: flex; gap: 10px;
+    }
+    .btn {
+      flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 14px 16px; border: none; border-radius: 14px;
+      font-size: 15px; font-weight: 700; cursor: pointer; color: #fff;
+      background: linear-gradient(135deg, #7c3aed, #d946ef);
+      box-shadow: 0 8px 24px -6px rgba(124,58,237,0.6); transition: transform .1s;
+    }
+    .btn:active { transform: scale(0.97); }
+
+    .overlay {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px; text-align: center;
+      padding: 24px; z-index: 10; transition: opacity .25s ease;
+      background: rgba(13,8,32,0.7); backdrop-filter: blur(6px);
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; visibility: hidden; }
+    .panel {
+      background: rgba(27,16,54,0.85); backdrop-filter: blur(12px) saturate(160%);
+      -webkit-backdrop-filter: blur(12px) saturate(160%);
+      border: 1px solid rgba(168,85,247,0.35);
+      border-radius: 22px; padding: 28px 26px; max-width: 340px; width: 100%;
+      box-shadow: 0 20px 60px -12px rgba(124,58,237,0.5);
+    }
+    .panel .big-score { font-size: 56px; font-weight: 800; line-height: 1; margin: 8px 0; }
+    .panel .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 2px; }
+    .panel .best { color: var(--muted); font-size: 15px; margin-top: 8px; }
+    .panel .btn { width: 100%; margin-top: 12px; }
+    .panel .btn.ghost {
+      background: transparent; border: 1px solid rgba(168,85,247,0.4); color: var(--text);
+      box-shadow: none; font-weight: 600;
+    }
+    #lb { margin: 14px 0 4px; text-align: left; font-size: 13px; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title">2048</div>
+    <div class="scores">
+      <div class="score-box"><div class="label">Счёт</div><div class="value" id="curScore">0</div></div>
+      <div class="score-box"><div class="label">Лучший</div><div class="value" id="bestScore">0</div></div>
+    </div>
+  </div>
+
+  <div class="board-wrap">
+    <div class="board" id="board">
+      <div class="grid">
+        <div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div>
+        <div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div>
+        <div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div>
+        <div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div>
+      </div>
+      <div class="tiles" id="tiles"></div>
+    </div>
+  </div>
+
+  <div class="bottom-bar">
+    <button class="btn" id="restartBtn">Заново</button>
+  </div>
+
+  <!-- Game Over overlay -->
+  <div class="overlay hidden" id="overScreen">
+    <div class="panel">
+      <div class="label">Результат</div>
+      <div class="big-score" id="finalScore">0</div>
+      <div class="best" id="overBest"></div>
+      <div id="lb"></div>
+      <button class="btn" id="againBtn">Заново</button>
+      <button class="btn ghost" id="shareBtn">📣 Поделиться</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── Telegram WebApp ── */
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#1b1036'); } catch (e) {} }
+  function haptic(type) {
+    if (!tg || !tg.HapticFeedback) return;
+    try {
+      if (type === 'light') tg.HapticFeedback.impactOccurred('light');
+      else if (type === 'merge') tg.HapticFeedback.impactOccurred('rigid');
+      else if (type === 'win') tg.HapticFeedback.notificationOccurred('success');
+      else if (type === 'over') tg.HapticFeedback.notificationOccurred('error');
+    } catch (e) {}
+  }
+
+  /* ── Backend API ── */
+  const API_ROOT = location.pathname.split('/games/')[0] || '';
+  const GAME = '2048';
+  const initData = tg ? (tg.initData || '') : '';
+  async function apiPost(path, body) {
+    try {
+      const r = await fetch(API_ROOT + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ game: GAME }, body)),
+      });
+      return await r.json();
+    } catch (e) { return null; }
+  }
+  function escapeHtml(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+  async function loadLeaderboard() {
+    const lb = document.getElementById('lb');
+    try {
+      const r = await fetch(API_ROOT + '/api/leaderboard?game=' + GAME + '&limit=5');
+      const j = await r.json();
+      if (j && j.top && j.top.length) {
+        lb.innerHTML = '<b>🏆 Топ игроков</b><br>' + j.top.map(function(t, i) {
+          return (i + 1) + '. ' + escapeHtml(t.name) + ' — ' + t.best;
+        }).join('<br>');
+      } else { lb.innerHTML = ''; }
+    } catch (e) { lb.innerHTML = ''; }
+  }
+
+  /* ── DOM refs ── */
+  const tilesEl = document.getElementById('tiles');
+  const curScoreEl = document.getElementById('curScore');
+  const bestScoreEl = document.getElementById('bestScore');
+
+  /* ── Tile colors ── */
+  const TILE_COLORS = {
+    2:    { bg: '#7c3aed', fg: '#fff', size: 1 },
+    4:    { bg: '#8b5cf6', fg: '#fff', size: 1 },
+    8:    { bg: '#a855f7', fg: '#fff', size: 1 },
+    16:   { bg: '#c084fc', fg: '#fff', size: 1 },
+    32:   { bg: '#d946ef', fg: '#fff', size: 1 },
+    64:   { bg: '#ec4899', fg: '#fff', size: 1 },
+    128:  { bg: '#f43f5e', fg: '#fff', size: 0.85 },
+    256:  { bg: '#f97316', fg: '#fff', size: 0.85 },
+    512:  { bg: '#eab308', fg: '#fff', size: 0.85 },
+    1024: { bg: '#84cc16', fg: '#fff', size: 0.7 },
+    2048: { bg: '#fbbf24', fg: '#fff', size: 0.7 },
+  };
+  function tileStyle(v) {
+    if (TILE_COLORS[v]) return TILE_COLORS[v];
+    return { bg: '#1e1b4b', fg: '#fff', size: 0.6 };
+  }
+
+  /* ── Game state ── */
+  var grid, score, best, moved, won, gameOver;
+  best = +(localStorage.getItem('2048_best') || 0);
+  bestScoreEl.textContent = best;
+
+  function init() {
+    grid = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    score = 0; moved = false; won = false; gameOver = false;
+    curScoreEl.textContent = '0';
+    document.getElementById('overScreen').classList.add('hidden');
+    addRandom(); addRandom();
+    render();
+  }
+
+  function addRandom() {
+    var empty = [];
+    for (var r = 0; r < 4; r++)
+      for (var c = 0; c < 4; c++)
+        if (grid[r][c] === 0) empty.push([r, c]);
+    if (!empty.length) return;
+    var cell = empty[Math.floor(Math.random() * empty.length)];
+    grid[cell[0]][cell[1]] = Math.random() < 0.9 ? 2 : 4;
+  }
+
+  /* ── Core logic ── */
+  function slideRow(row) {
+    var a = row.filter(function(v) { return v !== 0; });
+    var merged = false;
+    for (var i = 0; i < a.length - 1; i++) {
+      if (a[i] === a[i + 1]) {
+        a[i] *= 2;
+        score += a[i];
+        a.splice(i + 1, 1);
+        merged = true;
+        if (a[i] === 2048 && !won) { won = true; haptic('win'); }
+      }
+    }
+    while (a.length < 4) a.push(0);
+    return { row: a, merged: merged };
+  }
+
+  function rotateGrid(g) {
+    var n = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    for (var r = 0; r < 4; r++)
+      for (var c = 0; c < 4; c++)
+        n[c][3 - r] = g[r][c];
+    return n;
+  }
+
+  function move(dir) {
+    if (gameOver) return false;
+    var rotations = { left: 0, up: 1, right: 2, down: 3 };
+    var rots = rotations[dir];
+    var g = grid;
+    for (var i = 0; i < rots; i++) g = rotateGrid(g);
+
+    var anyMoved = false;
+    for (var r = 0; r < 4; r++) {
+      var result = slideRow(g[r].slice());
+      for (var c = 0; c < 4; c++) {
+        if (g[r][c] !== result.row[c]) anyMoved = true;
+      }
+      g[r] = result.row;
+      if (result.merged) anyMoved = true;
+    }
+
+    // rotate back
+    for (var j = 0; j < (4 - rots) % 4; j++) g = rotateGrid(g);
+
+    if (!anyMoved) return false;
+
+    grid = g;
+    addRandom();
+    curScoreEl.textContent = score;
+    if (score > best) { best = score; localStorage.setItem('2048_best', best); bestScoreEl.textContent = best; }
+    haptic(anyMoved ? 'merge' : 'light');
+    render();
+
+    if (isGameOver()) {
+      gameOver = true;
+      haptic('over');
+      setTimeout(showGameOver, 400);
+    }
+    return true;
+  }
+
+  function isGameOver() {
+    for (var r = 0; r < 4; r++)
+      for (var c = 0; c < 4; c++) {
+        if (grid[r][c] === 0) return false;
+        if (c < 3 && grid[r][c] === grid[r][c + 1]) return false;
+        if (r < 3 && grid[r][c] === grid[r + 1][c]) return false;
+      }
+    return true;
+  }
+
+  function showGameOver() {
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('overBest').textContent = 'Рекорд: ' + best;
+    document.getElementById('overScreen').classList.remove('hidden');
+    if (initData && score > 0) apiPost('/api/score', { init_data: initData, score: score });
+    loadLeaderboard();
+  }
+
+  /* ── Render tiles ── */
+  function render() {
+    tilesEl.innerHTML = '';
+    var board = document.getElementById('board');
+    var bw = board.clientWidth - 16; // minus padding
+    var gap = 8;
+    var cellSize = (bw - gap * 3) / 4;
+    for (var r = 0; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var v = grid[r][c];
+        if (v === 0) continue;
+        var el = document.createElement('div');
+        el.className = 'tile';
+        var ts = tileStyle(v);
+        var left = c * (cellSize + gap);
+        var top = r * (cellSize + gap);
+        el.style.cssText = 'left:' + left + 'px;top:' + top + 'px;width:' + cellSize + 'px;height:' + cellSize + 'px;' +
+          'background:' + ts.bg + ';color:' + ts.fg + ';font-size:' + (cellSize * 0.4 * ts.size) + 'px;';
+        el.textContent = v;
+        tilesEl.appendChild(el);
+      }
+    }
+  }
+
+  /* ── Input: swipe + keyboard ── */
+  var touchStartX = 0, touchStartY = 0, touching = false;
+  document.addEventListener('touchstart', function(e) {
+    if (e.target.closest('.overlay') || e.target.closest('.btn')) return;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touching = true;
+  }, { passive: true });
+  document.addEventListener('touchend', function(e) {
+    if (!touching) return;
+    touching = false;
+    var dx = e.changedTouches[0].clientX - touchStartX;
+    var dy = e.changedTouches[0].clientY - touchStartY;
+    var absDx = Math.abs(dx), absDy = Math.abs(dy);
+    if (Math.max(absDx, absDy) < 20) return;
+    if (absDx > absDy) move(dx > 0 ? 'right' : 'left');
+    else move(dy > 0 ? 'down' : 'up');
+  }, { passive: true });
+  document.addEventListener('keydown', function(e) {
+    var map = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+    if (map[e.key]) { e.preventDefault(); move(map[e.key]); }
+  });
+
+  /* ── Buttons ── */
+  document.getElementById('restartBtn').addEventListener('click', function(e) { e.stopPropagation(); init(); });
+  document.getElementById('againBtn').addEventListener('click', function(e) { e.stopPropagation(); init(); });
+  document.getElementById('shareBtn').addEventListener('click', function(e) {
+    e.stopPropagation();
+    var text = 'Я набрал ' + score + ' в 2048! Побей меня 👉';
+    var url = 'https://t.me/tap_tower_bot/play';
+    if (tg && tg.openTelegramLink) {
+      tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text));
+    } else if (navigator.share) {
+      navigator.share({ text: text }).catch(function() {});
+    } else { alert(text); }
+  });
+
+  /* ── Start ── */
+  init();
+})();
+</script>
+</body>
+</html>
